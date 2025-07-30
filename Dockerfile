@@ -1,6 +1,6 @@
 FROM python:3.10-slim
 
-# Install dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     build-essential \
@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     libopenblas-dev \
+    libmagic1 \
     && apt-get clean
 
 # Create working directory

@@ -1,53 +1,56 @@
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
-import uvicorn
-import fitz  # PyMuPDF
-from llama_cpp import Llama
+import subprocess
 import os
+import urllib.request
+import tempfile
+
+# Model download settings
+MODEL_PATH = "models/tinyllama.gguf"
+MODEL_URL = "https://huggingface.co/cmp-nct/tinyllama-gguf/resolve/main/TinyLlama-1.1B-Chat-v1.0.Q4_K_M.gguf"
+
+# Download the model if it doesn't exist
+os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+if not os.path.exists(MODEL_PATH):
+    print("📥 Downloading TinyLLaMA model...")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+    print("✅ Model downloaded.")
 
 app = FastAPI()
 
-# Load the model
-MODEL_PATH = "models/tinyllama.gguf"
-llm = Llama(model_path=MODEL_PATH, n_ctx=2048, n_threads=8)
-
-# Extract text from PDF
-def extract_text_from_pdf(file_path):
-    text = ""
-    with fitz.open(file_path) as doc:
-        for page in doc:
-            text += page.get_text()
-    return text
-
-# Ask LLM to format it
-def ask_llm_to_structure(text):
-    prompt = (
-        "Extract all artikelnummer, namn, antal sålda, and datum from the following text "
-        "and format the result as a JSON array. Only return the JSON array.\n\n"
-        f"{text}"
-    )
-
-    response = llm(prompt, max_tokens=1024, stop=["</s>"])
-    return response['choices'][0]['text'].strip()
-
-@app.post("/extract")
-async def extract_info(file: UploadFile = File(...)):
+@app.post("/predict")
+async def predict(file: UploadFile = File(...)):
     try:
-        file_path = f"/tmp/{file.filename}"
-        with open(file_path, "wb") as f:
-            f.write(await file.read())
+        # Save uploaded file to a temp path
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp_path = tmp.name
+            content = await file.read()
+            tmp.write(content)
 
-        # Get text from PDF
-        text = extract_text_from_pdf(file_path)
+        # Run the model with the PDF path
+        result = subprocess.run(
+            ["llama", "-m", MODEL_PATH, "-p", f"Read and summarize this PDF: {tmp_path}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
 
-        # Use LLM to get JSON
-        raw_json = ask_llm_to_structure(text)
+        # Remove file after processing
+        os.remove(tmp_path)
 
-        return JSONResponse(content={"data": raw_json, "status": "ok"})
+        if result.returncode != 0:
+            return JSONResponse(
+                status_code=500,
+                content={"error": result.stderr.strip(), "status": "llama.cpp failed"}
+            )
+
+        return {
+            "response": result.stdout.strip(),
+            "status": "ok"
+        }
 
     except Exception as e:
-        return JSONResponse(content={"error": str(e), "status": "error"}, status_code=500)
-
-# For local testing
-if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000)
+        return {
+            "error": str(e),
+            "status": "exception"
+        }
